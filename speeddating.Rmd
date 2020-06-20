@@ -1,0 +1,411 @@
+---
+title: "Speed-dating(Supervised learning)"
+output: 
+  html_notebook: 
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 5
+    theme: journal
+---
+### Classification
+We are going to use supervised learning to determine the possibility of a second date based on the outcomes of the first date.*A second date is only guaranteed if both parties aggree*.
+
+#### dataset
+Our dataset contains the following labels
+
+1. Age-ages of the parties
+2. Race- their racial affiliations
+3. Attractive-whether the partner is attrative (on a scale of one to ten)
+4. Sincere- How sincere the individual is (1-10)
+5. Fun: How fun is the partner(1-10)
+6. Shared interest: To what extent do the other party identify with your interests or hobbies(1-10)
+7. Partneryes: How confident are you that your partner will want a second date
+8. Like: How much do you like the other person
+9. Decision: Individual decision of the parties as to whether they would like to go on a second date
+10. ambitious: how ambitious is your partner.(1-10)
+11. Second_date: A binary class based on the decision made by both parties as to whether they would prefer a second date(1: for yes and 0: for no).
+```{r}
+# load libraries
+library(ggplot2)
+library(MASS)
+library(rpart)
+library(mlbench)
+library(caret)
+library(e1071)
+library(randomForest)
+library(ggplot2)
+library(lattice)
+library(nnet)
+library(pROC)
+library(ROCR)
+library(class)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(rpart.plot)
+library(Amelia)
+library(FSelector)
+# dataset
+data <- read.csv(file.choose(), header = TRUE, stringsAsFactors = TRUE)
+```
+
+```{r}
+# response label(second_date)
+second_date  <- matrix(nrow = nrow(data), ncol = 1)
+
+for (i in 1:nrow(data)){
+  if (data[i,1] + data[i,2] == 2){
+    second_date[i]  <- 1
+  } else {
+    second_date[i]  <- 0
+  }
+}
+# include the column in the new dataset
+data  <- cbind(second_date, data)
+```
+
+#### data preprocessing
+handling the missing values and also introduce some functions for ease of computations.
+```{r}
+#  create a functin to add the missing values to a list
+lappend <- function (lst, ...){
+  lst <- c(lst, list(...))
+  return(lst)
+}
+# add the missing values
+na_index <- list()
+for (i in 1:ncol(data)){
+  na_index <- lappend(na_index, which(is.na(data[,i])))
+}
+```
+
+```{r}
+# encode the non-numeric labels so that they are compatible with the method we'll use for handling null values
+data$RaceM <- as.numeric(data$RaceM)
+data$RaceF <- as.numeric(data$RaceF)
+
+# use amelia method  to impute the missing values
+data <- amelia(x = data, m = 1, boot.type = "none")$imputations$imp1
+
+# we need to confirm that the method has sorted the missing values
+a_index <- list()
+for (i in 1:ncol(data)){
+  na_index <- lappend(na_index, which(is.na(data[,i])))
+}
+na_index <- matrix(na_index, ncol = length(na_index), nrow = 1)
+print(na_index)
+
+# a function for computing statistical measures
+summaryStatistics <- function(array){
+  Mean <- mean(array)
+  Std <- sd(array)
+  Min <- min(array)
+  Max <- max(array)
+  Range <- Max - Min 
+  output <- data.frame("Mean" = Mean, "Std Dev" = Std, "Min" =  Min,"Max" = Max, "Range" = Range)
+  return(output)
+}
+# lets look at some summaries
+summaryStatistics(data$AgeM)
+summaryStatistics(data$AgeF)
+
+```
+*from above summaries the age in males and females averages at 26*
+
+#### data exploration
+Here we intend to visualise some patterns from the data from which we can derive insights about the data
+```{r}
+# distribution of ages in both sexes
+hist(data$AgeM, main = "Distribution of Age in Males", xlab = "Age", ylab = "Frequency", col = "darkorange3")
+
+hist(data$AgeF, main = "Distribution of Age in Females", xlab = "Age", ylab = "Frequency", col = "firebrick1")
+
+# let us create age classes for ease of analysis based on age
+data<-data%>%
+  mutate(age_M=ifelse(AgeM<10,'below 10', 
+  ifelse(AgeM<20,'10-20',
+         ifelse(AgeM<30,'21-30',
+                ifelse(AgeM<40,'31-40',
+                       ifelse(AgeM<50,'41-50',
+                              ifelse(AgeM<60,'51-60',
+                                     ifelse(AgeM>60,'60+',NA))))))))
+data<-data%>%
+  mutate(Age_F=ifelse(AgeF<10,'below 10', 
+  ifelse(AgeF<20,'10-20',
+         ifelse(AgeF<30,'21-30',
+                ifelse(AgeF<40,'31-40',
+                       ifelse(AgeF<50,'41-50',
+                              ifelse(AgeF<60,'51-60',
+                                     ifelse(AgeF>60,'60+',NA))))))))
+
+```
+*from the two age plots we can see that thers is significantly less variation in female ages as compared to male ages. As we explore this data further we will see the effect of  the age distribution on the overall outcome of the speeddate.*
+
+
+```{r}
+#  a label map for enhance visualization of the different variables on a box plot
+label_map <- c(LikeF = "Like",
+ AttractiveF = "Attractive",
+ IntelligentF = "intelligent",
+ AmbitiousF="Ambitious",
+ FunF="Fun",
+ SincereF="sincere")
+# how does the age factor in males affect what their partner feels about them
+data %>% gather(Measurement, Value, -age_M,-Age_F,-RaceM,-RaceF,-AgeM,-AgeF,-second_date,-DecisionM,-DecisionF,-LikeM,-PartnerYesM,-PartnerYesF,-AttractiveM,-IntelligentM,-AmbitiousM,-FunM,-SharedInterestsM,-SharedInterestsF,-SincereM) %>%
+ ggplot(aes(x = age_M, y = Value, fill = age_M)) +
+ geom_boxplot() +
+ scale_x_discrete(labels = c("below 10" = "below 10","10-20" = "10-20","21-30" = "21-30","31-40"="31-40","41-50"="41-50","51-60"="51-60","60+"="60+")) +
+ scale_fill_brewer(palette = "Greens") +
+ facet_grid(Measurement ~ ., switch = "y",
+ labeller = labeller(Measurement = label_map)) +
+ coord_flip() +
+ theme(strip.background = element_blank()) +
+ theme(legend.position="top")
+```
+*ages between 10 and 20 generally perform poorly in almost all the aspects except that they are deemed to be more ambitious and fun.*
+```{r}
+# how does the age in female affect how the other partner feels about them 
+label_map <- c(LikeM = "Like",
+ AttractiveM = "Attractive",
+ IntelligentM = "intelligent",
+ AmbitiousM="Ambitious",
+ FunM="Fun",
+ SincereM="sincere")
+data %>% gather(Measurement, Value, -age_M,-Age_F,-RaceM,-RaceF,-AgeM,-AgeF,-second_date,-DecisionM,-DecisionF,-LikeF,-PartnerYesM,-PartnerYesF,-AttractiveF,-IntelligentF,-AmbitiousF,-FunF,-SharedInterestsM,-SharedInterestsF,-SincereF) %>%
+ ggplot(aes(x = Age_F, y = Value, fill = Age_F)) +
+ geom_boxplot() +
+ scale_x_discrete(labels = c("below 10" = "below 10","10-20" = "10-20","21-30" = "21-30","31-40"="31-40","41-50"="41-50","51-60"="51-60","60+"="60+")) +
+ scale_fill_brewer(palette = "Greens") +
+ facet_grid(Measurement ~ ., switch = "y",
+ labeller = labeller(Measurement = label_map)) +
+ coord_flip() +
+ theme(strip.background = element_blank()) +
+ theme(legend.position="top")
+```
+*Females in the ages of 21-40 have averagely good scores in all the aspects. Again the ages  below 20 have low score in all aspects.*
+
+
+```{r}
+# intelligence bias by race and age
+# males
+data %>%
+ ggplot(aes(x = IntelligentF, y = age_M)) +
+ geom_jitter(height = 0.05, width = 0.3, alpha=0.4)
+data %>%
+ ggplot(aes(x = IntelligentF, y = as.factor(RaceM))) +
+ geom_jitter(height = 0.05, width = 0.3, alpha=0.4)
+```
+*Males in the ages of 21-30 have a good score for intelligence. while in terms of race, the race with index of 4 gives a very good score*
+```{r}
+# females
+data %>%
+ ggplot(aes(x = IntelligentM, y = Age_F)) +
+ geom_jitter(height = 0.05, width = 0.3, alpha=0.4)
+data %>%
+ ggplot(aes(x = IntelligentM, y = as.factor(RaceF))) +
+ geom_jitter(height = 0.05, width = 0.3, alpha=0.4)
+```
+*The bias on Intelligence by age and race is also similar in females as seen in above two plots*
+```{r}
+# what features/labels are likely to influence a yes to a second date
+# males
+males_data<-data%>%select(c(DecisionM,LikeM,AttractiveM,AmbitiousM,AgeF,IntelligentM,FunM,SincereM))
+tree<-rpart(DecisionM~., data=males_data, cp=.02)
+# visualize
+rpart.plot(tree,box.palette = "RdBu",shadow.col = "gray", nn=TRUE)
+
+# females
+female_data<-data%>%select(c(DecisionF,LikeF,AttractiveF,AmbitiousF,AgeM,IntelligentF,FunF,SincereF))
+tree<-rpart(DecisionF~., data=female_data, cp=.02)
+# visualize
+rpart.plot(tree,box.palette = "RdBu",shadow.col = "gray", nn=TRUE)
+
+```
+
+
+```{r}
+# what is the bias on attraction by age
+# males
+data %$% plot(AgeM,AttractiveF, main="bias on attractiveness by age(males)", type="h",
+ xlab="age in males", ylab="attractive score")
+# females
+data %$% plot(AgeF, AttractiveM, main="bias on attractiveness by age(females)", type="h",
+ xlab="age in females", ylab="attractive score")
+```
+
+```{r}
+# hypothesis: intelligent people tend to be more ambitious
+# males
+data %$% plot(AmbitiousF,IntelligentF, main="how ambition and intelligent scores compare", type="h",
+ xlab="ambition score", ylab="intelligence score")
+# females
+data %$% plot(AmbitiousM,IntelligentM, main="how ambition and intelligence scores compare", type="h",
+ xlab="ambition score", ylab="intelligence score")
+```
+*As expected a higher intelligence score yield a better ambitious score in both sexes.*
+
+#### Feature selection
+We need to indentify the labels that are more important to our target variable(second_date)
+```{r}
+# we need to scale the age labels so the mean and variance of the datapoints so that they have the best effect to the models
+data$AgeM <- scale(data$AgeM)
+data$AgeF <- scale(data$AgeF)
+
+# also we need to remove the labels we added earlier during exploration
+data%>% select(c(-age_M, -Age_F))->data
+
+################################################################################################
+#Feature Selection 
+corr <- cor(data)
+# the correlation matrix 
+#corr
+
+#Converting all Columns to Numeric prior to Input 
+for (i in 1:ncol(data)){
+  data[,i] <- as.integer(data[,i])
+}
+
+#Random Forest Feature Selection Based on Importance of Classification 
+data$second_date <- as.factor(data$second_date)
+featImport <- random.forest.importance(second_date ~., data = data, importance.type = 1)
+columns <- cutoff.k.percent(featImport, 0.4)
+columns
+```
+
+#### model training
+Since this is classification problem we will use three algorithms to train the model;
+
+1. logistic regression
+2. Bayesian classifier
+3. KNN
+
+*logistic regression:It is almost the best algorithm and also we'll use it as baseline for evaluting other algorithms. We  will evaluate the perfomance basd on AUC score*
+```{r}
+processedData <- data[, columns]
+```
+
+```{r}
+# Method 1: Logistic Regression
+# we wil vary the value for lambda so that we can see which one gives a good AUC score
+lambda <- seq(0.01,0.9,0.01)
+AUC<-c()
+for (i in 1:length(lambda))
+{
+  rows <- sample(1:nrow(processedData), nrow(processedData)/2)
+  logReg <- glm(as.factor(second_date[rows]) ~., data = processedData[rows, ], family = binomial(link = "logit"), method = "glm.fit")
+  y_h <- ifelse(logReg$fitted.values >= lambda[i], 1, 0)
+  AUC <- append(roc(y_h, as.numeric(second_date[-rows]))$auc, AUC)
+}
+```
+
+```{r}
+# Looking at the AUC scores for our lambda values
+plot(lambda,AUC, main = "AUC over Lambda Value \n(Logistic Regression)", 
+     xlab = "Lambda", ylab = "AUC", type = "l", col = "cadetblue")
+
+```
+
+*At about 0.21 we have a good AUC score so we will tune the model using that value for lambda*
+```{r}
+# using a lambda of 0.21
+AUC <- c()
+for (i in 1:length(lambda)){
+  rows <- sample(1:nrow(processedData), nrow(processedData)/2)
+  logReg <- glm(as.factor(second_date[rows]) ~., data = processedData[rows, ], family = binomial(link = "logit"), method = "glm.fit")
+  y_h <- ifelse(logReg$fitted.values >= 0.21, 1, 0)
+  AUC <- append(roc(y_h, as.numeric(second_date[-rows]))$auc, AUC)
+}
+```
+
+```{r}
+# looking at the summaries
+
+#Summary Statistics and Various Plots
+plot(AUC, main = "AUC over 100 Iterations for Logistic Regression, lambda = 0.21", 
+     xlab = "Iterations", ylab = "AUC", type = "l", col = "cadetblue")
+
+hist(AUC, main = "Histogram for AUC for Logistic Regression, lambda = 0.21", 
+     xlab = "AUC Value", ylab = "Frequency", col = "firebrick3")
+
+summaryStatistics(AUC)
+```
+
+*This model yields a very low AUC and thus is not really our preffered model, so we will implement the next algorithms and see how they compare*
+
+```{r}
+# Method 2: Bayesian Classifier
+AUC <- c()
+for (i in 1:100){
+  rows <- sample(1:nrow(processedData), 92)
+  bayesClass <- naiveBayes(y = as.factor(second_date[rows]), x = processedData[rows, ], data = processedData)
+  y_h <- predict(bayesClass, processedData[rows, ], type = c("class"))
+  AUC <- append(roc(y_h, as.numeric(second_date[rows]))$auc, AUC)
+}
+```
+
+```{r}
+
+#Summary Statistics and Various Plots
+plot(AUC, main = "AUC over 100 Iterations for Naive Bayes Classifier", 
+     xlab = "Iterations", ylab = "AUC", type = "l", col = "cadetblue")
+
+hist(AUC, main = "Histogram for AUC for Naive Bayes Classifier", 
+     xlab = "AUC Value", ylab = "Frequency", col = "firebrick3")
+
+summaryStatistics(AUC)
+
+
+#Predicting out of Sample:processedData[-rows] and second_date[-rows]
+y_h <- predict(bayesClass, processedData[-rows, ], type = c("class"))
+roc(y_h, as.numeric(second_date[-rows]))$auc
+```
+*This model is generally good and it is evident from the AUC generated by predicting out of sample.*
+
+```{r}
+#Method 3: K-Nearest Neighbor
+# we will try different k values for our model:the K value that generates a good AUC score(putting into consideration the problem of overfitting)will be used for the tuned model
+K <- seq(1, 40, 1)
+AUC <- c()
+for (i in 1:length(K)){
+  rows <- sample(1:nrow(processedData), nrow(processedData)/2)
+  y_h <- knn(train = processedData[rows, ], test = processedData[rows,], cl = second_date[rows], k = K[i], use.all = TRUE)
+  AUC <- append(roc(y_h, as.numeric(second_date[rows]))$auc, AUC)
+}
+```
+
+```{r}
+#Summary Statistics and Various Plots
+plot(AUC, main = "AUC over K Value \n(K Nearest Neighbor)", 
+     xlab = "K", ylab = "AUC", type = "l", col = "cadetblue")
+```
+*To avoid overfitting we will choose a relatively lower value of k but also taking into account the AUC.lets consider k value of 5 for example*
+
+```{r}
+# using a k value of 5
+AUC <- c()
+for (i in 1:100){
+  y_h <- knn(train = processedData[rows, ], test = processedData[-rows,], cl = second_date[rows], k = 5, use.all = TRUE)
+  AUC <- append(roc(y_h, as.numeric(second_date[rows]))$auc, AUC)
+}
+
+```
+
+```{r}
+#Summary Statistics and Various Plots
+plot(AUC, main = "AUC over 100 Iterations for K Nearest Neighbor, K = 5", 
+     xlab = "Iterations", ylab = "AUC", type = "l", col = "cadetblue")
+
+hist(AUC, main = "Histogram for AUC for K Nearest Neighbor, K = 5", 
+     xlab = "AUC Value", ylab = "Frequency", col = "firebrick3")
+
+
+summaryStatistics(AUC)
+
+#Predicting out of Sample 
+y_h <- knn(train = processedData[rows, ], test = processedData[-rows, ], cl = second_date[-rows])
+roc(y_h, as.numeric(second_date[-rows]))$auc
+```
+*from above summaries the KNN algorithm is not reliable as it yields a very low score on training and predicting out of sample*
+
+#### conclusion
+Comparing above results Bayesian Model is a good choice:generally AUC score of 70 is a good indicator,We can therefore use this model for our test data.
